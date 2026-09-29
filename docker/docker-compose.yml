@@ -1,0 +1,254 @@
+networks:
+  grc-network:
+    driver: bridge
+
+services:
+
+  # =========================================================
+  # 1. GLPI - MariaDB
+  # =========================================================
+
+  mariadb:
+    image: mariadb:10.11
+    container_name: glpi-db
+
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: glpidb
+      MARIADB_USER: glpiuser
+      MARIADB_PASSWORD: glpipass
+
+    volumes:
+      - glpi_db_data:/var/lib/mysql
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 2. GLPI
+  # =========================================================
+
+  glpi:
+    image: diouxx/glpi:latest
+    container_name: glpi-web
+
+    ports:
+      - "8080:80"
+
+    environment:
+      TIMEZONE: Europe/Istanbul
+
+    volumes:
+      - glpi_data:/var/www/html/glpi
+
+    depends_on:
+      - mariadb
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 3. DEFECTDOJO - PostgreSQL
+  # =========================================================
+
+  defectdojo-postgres:
+    image: postgres:15-alpine
+    container_name: defectdojo-postgres
+
+    environment:
+      POSTGRES_DB: defectdojo
+      POSTGRES_USER: defectdojo
+      POSTGRES_PASSWORD: defectdojo_password
+
+    volumes:
+      - defectdojo_postgres_data:/var/lib/postgresql/data
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 4. DEFECTDOJO - Valkey
+  # =========================================================
+
+  defectdojo-valkey:
+    image: valkey/valkey:7.2-alpine
+    container_name: defectdojo-valkey
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 5. DEFECTDOJO - Django / uWSGI
+  # =========================================================
+
+  defectdojo-uwsgi:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-uwsgi
+
+    environment: &django_env
+      DD_DATABASE_URL: postgres://defectdojo:defectdojo_password@defectdojo-postgres:5432/defectdojo
+      DD_CELERY_BROKER_URL: redis://defectdojo-valkey:6379/0
+      DD_SECRET_KEY: "staj_projesi_icin_guclu_bir_gizli_anahtar"
+      DD_ALLOWED_HOSTS: "*"
+
+    volumes:
+      - defectdojo_media:/app/media
+
+    depends_on:
+      - defectdojo-postgres
+      - defectdojo-valkey
+
+    restart: always
+
+    networks:
+      grc-network:
+        aliases:
+          - uwsgi
+
+
+  # =========================================================
+  # 6. DEFECTDOJO - Celery Worker
+  # =========================================================
+
+  defectdojo-celeryworker:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-celeryworker
+
+    command:
+      - celery
+      - -A
+      - dojo
+      - worker
+      - -l
+      - info
+      - --concurrency
+      - "2"
+
+    environment: *django_env
+
+    volumes:
+      - defectdojo_media:/app/media
+
+    depends_on:
+      - defectdojo-postgres
+      - defectdojo-valkey
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 7. DEFECTDOJO - Celery Beat
+  # =========================================================
+
+  defectdojo-celerybeat:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-celerybeat
+
+    command:
+      - celery
+      - -A
+      - dojo
+      - beat
+      - -l
+      - info
+
+    environment: *django_env
+
+    volumes:
+      - defectdojo_media:/app/media
+
+    depends_on:
+      - defectdojo-postgres
+      - defectdojo-valkey
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 8. DEFECTDOJO - Initializer
+  # =========================================================
+
+  defectdojo-initializer:
+    image: defectdojo/defectdojo-django:latest
+    container_name: defectdojo-initializer
+
+    command:
+      - /entrypoint-initializer.sh
+
+    environment:
+      <<: *django_env
+      DD_INITIALIZE: "true"
+      DD_ADMIN_USER: admin
+      DD_ADMIN_PASSWORD: adminpassword
+
+    depends_on:
+      - defectdojo-postgres
+      - defectdojo-valkey
+
+    networks:
+      - grc-network
+
+
+  # =========================================================
+  # 9. DEFECTDOJO - NGINX
+  # =========================================================
+
+  defectdojo-nginx:
+    image: defectdojo/defectdojo-nginx:latest
+    container_name: defectdojo-nginx
+
+    ports:
+      - "8081:8080"
+
+    depends_on:
+      - defectdojo-uwsgi
+
+    restart: always
+
+    networks:
+      - grc-network
+
+
+# ===========================================================
+# VOLUMES
+# ===========================================================
+
+volumes:
+
+  # ---------------------------------------------------------
+  # MEVCUT GLPI VOLUME'LARI
+  # ---------------------------------------------------------
+
+  glpi_data:
+    name: docker_glpi_data
+
+  glpi_db_data:
+    name: docker_glpi_db_data
+
+  # ---------------------------------------------------------
+  # DEFECTDOJO VOLUME'LARI
+  # ---------------------------------------------------------
+
+  defectdojo_postgres_data:
+    name: docker_defectdojo_postgres_data
+
+  defectdojo_media:
+    name: docker_defectdojo_media
